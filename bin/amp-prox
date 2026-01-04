@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# 获取项目根目录
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT_DIR="$( cd -P "$( dirname "$SOURCE" )/.." >/dev/null 2>&1 && pwd )"
+
+CONFIG_FILE="$ROOT_DIR/config/config.json"
+SHIM_SCRIPT="$ROOT_DIR/src/amp_shim.js"
+LOG_DIR="$ROOT_DIR/logs"
+
+# 获取配置 (增加容错)
+PORT=$(grep -oP '"port":\s*\K\d+' "$CONFIG_FILE" 2>/dev/null || echo "8321")
+API_KEY=$(grep -oP '"apiKey":\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || echo "sk-123456")
+
+# 1. 确保日志目录存在
+mkdir -p "$LOG_DIR"
+
+# 2. 确保代理运行
+if ! ss -tulpn | grep -q ":$PORT"; then
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    LOG_FILE="$LOG_DIR/proxy_$TIMESTAMP.log"
+    node "$SHIM_SCRIPT" > "$LOG_FILE" 2>&1 &
+    
+    # 简单的日志清理：保留最新的 5 个日志
+    (ls -t "$LOG_DIR"/proxy_*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null) &
+    
+    # 等待端口就绪 (最多等待 5 秒)
+    for i in {1..20}; do
+        if ss -tulpn | grep -q ":$PORT"; then
+            break
+        fi
+        sleep 0.2
+    done
+fi
+
+# 3. 环境注入
+export AMP_URL="http://127.0.0.1:$PORT"
+export AMP_API_KEY="$API_KEY"
+
+# 4. 运行本体
+exec /root/.nvm/versions/node/v22.12.0/bin/amp "$@"

@@ -1,0 +1,14 @@
+{
+  "name": "amp-prox",
+  "version": "1.1.0",
+  "description": "Proxy wrapper for Amp CLI with configuration and logging.",
+  "main": "src/amp_shim.js",
+  "bin": {
+    "amp-prox": "./bin/amp-prox"
+  },
+  "scripts": {
+    "setup": "./scripts/start.sh"
+  },
+  "author": "",
+  "license": "ISC"
+}
