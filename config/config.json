@@ -2,5 +2,5 @@
   "remoteUrl": "http://192.168.2.138:8317",
   "apiKey": "sk-123456",
   "targetModel": "gemini-3-flash-preview",
-  "port": 8321
+  "port": 9000
 }

@@ -13,14 +13,61 @@ CONFIG_FILE="$ROOT_DIR/config/config.json"
 SHIM_SCRIPT="$ROOT_DIR/src/amp_shim.js"
 LOG_DIR="$ROOT_DIR/logs"
 
-# 获取配置 (增加容错)
+# 1. 解析参数
+NEW_MODEL=""
+PASSED_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -m|--model)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        NEW_MODEL="$2"
+        shift 2
+      else
+        echo "Error: Model name missing after $1" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      PASSED_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# 2. 获取配置 (增加容错)
 PORT=$(grep -oP '"port":\s*\K\d+' "$CONFIG_FILE" 2>/dev/null || echo "8321")
 API_KEY=$(grep -oP '"apiKey":\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || echo "sk-123456")
+CURRENT_MODEL=$(grep -oP '"targetModel":\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null)
 
-# 1. 确保日志目录存在
+# 3. 处理模型切换
+RESTART_PROXY=false
+if [ -n "$NEW_MODEL" ]; then
+    if [ "$NEW_MODEL" != "$CURRENT_MODEL" ]; then
+        # 更新配置文件 (使用 sed 替换，确保逻辑严密)
+        if grep -q '"targetModel":' "$CONFIG_FILE"; then
+            sed -i "s/\"targetModel\":\s*\"[^\"]*\"/\"targetModel\": \"$NEW_MODEL\"/" "$CONFIG_FILE"
+        else
+            # 如果不存在则在最后一行前添加 (简单处理 JSON)
+            sed -i "s/}/  ,\"targetModel\": \"$NEW_MODEL\"\n}/" "$CONFIG_FILE"
+        fi
+        RESTART_PROXY=true
+        echo "Switching model to: $NEW_MODEL"
+    fi
+fi
+
+# 4. 确保日志目录存在
 mkdir -p "$LOG_DIR"
 
-# 2. 确保代理运行
+# 5. 确保代理运行 (如果模型改变则强行重启)
+if [ "$RESTART_PROXY" = true ]; then
+    # 查找占用该端口的进程 PID
+    PID=$(ss -tulpn | grep ":$PORT" | grep -oP 'pid=\K\d+')
+    if [ -n "$PID" ]; then
+        kill "$PID" 2>/dev/null
+        sleep 0.5
+    fi
+fi
+
 if ! ss -tulpn | grep -q ":$PORT"; then
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
     LOG_FILE="$LOG_DIR/proxy_$TIMESTAMP.log"
@@ -38,9 +85,29 @@ if ! ss -tulpn | grep -q ":$PORT"; then
     done
 fi
 
-# 3. 环境注入
+# 6. 环境注入
 export AMP_URL="http://127.0.0.1:$PORT"
 export AMP_API_KEY="$API_KEY"
 
-# 4. 运行本体
-exec /root/.nvm/versions/node/v22.12.0/bin/amp "$@"
+# 7. 查找 amp 可执行文件
+AMP_BIN=""
+
+# 优先级 1: 环境变量
+if [ -n "$AMP_EXEC_PATH" ] && [ -x "$AMP_EXEC_PATH" ]; then
+    AMP_BIN="$AMP_EXEC_PATH"
+# 优先级 2: 硬编码路径 (保持原样作为备选)
+elif [ -x "/root/.nvm/versions/node/v22.12.0/bin/amp" ]; then
+    AMP_BIN="/root/.nvm/versions/node/v22.12.0/bin/amp"
+# 优先级 3: 系统 PATH
+elif command -v amp >/dev/null 2>&1; then
+    AMP_BIN="$(command -v amp)"
+fi
+
+if [ -z "$AMP_BIN" ]; then
+    echo "Error: 'amp' executable not found." >&2
+    echo "Please ensure 'amp' is installed and in your PATH, or set AMP_EXEC_PATH." >&2
+    exit 1
+fi
+
+# 8. 运行本体
+exec "$AMP_BIN" "${PASSED_ARGS[@]}"
