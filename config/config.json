@@ -1,6 +1,6 @@
 {
   "remoteUrl": "http://192.168.2.138:8317",
   "apiKey": "sk-123456",
-  "targetModel": "gemini-3-flash-preview",
-  "port": 9000
+  "targetModel": "kiro-claude-sonnet-4-5-agentic",
+  "port": 9001
 }

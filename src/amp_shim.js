@@ -15,49 +15,84 @@ try {
     if (fs.existsSync(configPath)) {
         config = { ...config, ...JSON.parse(fs.readFileSync(configPath, 'utf8')) };
     }
-} catch (e) { console.error('Config error:', e.message); }
+} catch (e) {
+    console.error(`[${new Date().toISOString()}] Config error:`, e.message);
+}
 
 const server = http.createServer((req, res) => {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-        // Mock common endpoints that often fail on custom backends
-        if (req.url.includes('/auth') || req.url.includes('/user') || req.url.includes('/settings') || req.url.includes('/api/internal') || req.url.includes('uploadThread') || req.url.includes('news.rss')) {
-            const mock = { id: 'user_1', status: 'active', plan: 'pro', tier: 'pro', credits: 999999, is_free_tier: false, canUseAmpFree: true, isDailyGrantEnabled: false, can_use_opus: true, settings: {}, features: [{ name: 'live_sync', enabled: true }], code: 'success' };
-            const wrapped = { ok: true, result: mock, user: mock, features: mock.features, ...mock };
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify(wrapped));
-        }
+    // 1. 快速响应 Mock 接口 (不需要读取 Body)
+    const isMockUrl = req.url.includes('/auth') || 
+                      req.url.includes('/user') || 
+                      req.url.includes('/settings') || 
+                      req.url.includes('/api/internal') || 
+                      req.url.includes('/api/v1/auth') || 
+                      req.url.includes('/api/v1/user') || 
+                      req.url.includes('/membership') || 
+                      req.url.includes('uploadThread') || 
+                      req.url.includes('news.rss');
 
-        let payload;
-        try { 
-            if (body) { 
-                payload = JSON.parse(body); 
-                if (payload.model && config.targetModel) {
-                    payload.model = config.targetModel; 
-                }
-            } 
-        } catch (e) { 
-            payload = body; 
-        }
-        
-        const url = new URL(config.remoteUrl);
-        const protocol = url.protocol === 'https:' ? https : http;
-        
-        const options = {
-            hostname: url.hostname,
-            port: url.port || (url.protocol === 'https:' ? 443 : 80),
-            path: req.url,
-            method: req.method,
-            headers: { 
-                ...req.headers, 
-                'host': url.hostname, 
-                'authorization': `Bearer ${config.apiKey}` 
-            }
+    if (isMockUrl) {
+        const mock = { 
+            id: 'user_1', 
+            email: 'admin@example.com',
+            full_name: 'Custom User',
+            status: 'active', 
+            plan: 'pro', 
+            tier: 'pro', 
+            credits: 999999, 
+            is_free_tier: false, 
+            canUseAmpFree: true, 
+            isDailyGrantEnabled: false, 
+            can_use_opus: true, 
+            settings: {
+                has_onboarded: true,
+                preferred_model: config.targetModel
+            }, 
+            features: [{ name: 'live_sync', enabled: true }, { name: 'agentic_mode', enabled: true }], 
+            code: 'success',
+            token: 'mock_token_123456'
         };
+        const wrapped = { 
+            ok: true, 
+            success: true,
+            status: 'success',
+            result: mock, 
+            user: mock, 
+            data: mock,
+            features: mock.features, 
+            ...mock 
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(wrapped));
+    }
 
-        const updatedBody = payload ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : '';
-        if (updatedBody) options.headers['content-length'] = Buffer.byteLength(updatedBody);
+    // 2. 准备代理请求参数
+    const url = new URL(config.remoteUrl);
+    const protocol = url.protocol === 'https:' ? https : http;
+    const options = {
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: req.url,
+        method: req.method,
+        headers: { 
+            ...req.headers, 
+            'host': url.hostname, 
+            'authorization': `Bearer ${config.apiKey}` 
+        }
+    };
+
+    // 移除可能引起冲突的 Header
+    delete options.headers['content-length'];
+    delete options.headers['transfer-encoding'];
+    delete options.headers['connection'];
+
+    // 3. 处理 Body
+    const isJson = req.headers['content-type'] && req.headers['content-type'].includes('application/json');
+
+    const startProxy = (requestBody) => {
+        if (requestBody !== undefined) {
+            options.headers['content-length'] = Buffer.byteLength(requestBody);
+        }
 
         const proxyReq = protocol.request(options, (proxyRes) => {
             res.writeHead(proxyRes.statusCode, proxyRes.headers);
@@ -65,19 +100,48 @@ const server = http.createServer((req, res) => {
         });
 
         proxyReq.on('error', (err) => {
-            console.error(`[${new Date().toISOString()}] Proxy Error (${config.remoteUrl}): ${err.message}`);
-            res.writeHead(500);
-            res.end('Proxy Error');
+            console.error(`[${new Date().toISOString()}] Proxy Error: ${err.message}`);
+            if (!res.headersSent) {
+                res.writeHead(502);
+                res.end('Proxy Gateway Error');
+            }
         });
 
-        if (updatedBody) proxyReq.write(updatedBody);
-        proxyReq.end();
-    });
+        if (requestBody !== undefined) {
+            proxyReq.write(requestBody);
+            proxyReq.end();
+        } else {
+            req.pipe(proxyReq);
+        }
+    };
+
+    if (['POST', 'PUT', 'PATCH'].includes(req.method) && isJson) {
+        // 如果是 JSON 请求，缓冲以注入 Model
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                if (body && config.targetModel) {
+                    let payload = JSON.parse(body);
+                    if (payload.model) {
+                        payload.model = config.targetModel;
+                        body = JSON.stringify(payload);
+                    }
+                }
+            } catch (e) {
+                // 解析失败则保持原样
+            }
+            startProxy(body);
+        });
+    } else {
+        // 其他请求直接流式转发
+        startProxy();
+    }
 });
 
 server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
-        console.log(`Port ${config.port} is already in use. Assuming proxy is already running.`);
+        console.log(`Port ${config.port} is already in use.`);
         process.exit(0);
     } else {
         console.error('Server error:', e);
@@ -88,3 +152,4 @@ server.on('error', (e) => {
 server.listen(config.port, '127.0.0.1', () => {
     console.log(`Proxy running on 127.0.0.1:${config.port} -> ${config.remoteUrl}`);
 });
+

@@ -36,6 +36,7 @@ done
 
 # 2. 获取配置 (增加容错)
 PORT=$(grep -oP '"port":\s*\K\d+' "$CONFIG_FILE" 2>/dev/null || echo "8321")
+echo "DEBUG: Port read from config: $PORT"
 API_KEY=$(grep -oP '"apiKey":\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || echo "sk-123456")
 CURRENT_MODEL=$(grep -oP '"targetModel":\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null)
 
@@ -88,6 +89,7 @@ fi
 # 6. 环境注入
 export AMP_URL="http://127.0.0.1:$PORT"
 export AMP_API_KEY="$API_KEY"
+export NODE_OPTIONS="--require $ROOT_DIR/src/intercept.js"
 
 # 7. 查找 amp 可执行文件
 AMP_BIN=""
@@ -110,4 +112,4 @@ if [ -z "$AMP_BIN" ]; then
 fi
 
 # 8. 运行本体
-exec "$AMP_BIN" "${PASSED_ARGS[@]}"
+exec "$AMP_BIN" --settings-file "$ROOT_DIR/config/fake_settings.json" "${PASSED_ARGS[@]}"

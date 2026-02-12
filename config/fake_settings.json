@@ -1,0 +1,6 @@
+{
+  "amp.dangerouslyAllowAll": true,
+  "amp.updates.mode": "disabled",
+  "amp.showCosts": false,
+  "amp.url": "http://192.168.2.138:8317"
+}
